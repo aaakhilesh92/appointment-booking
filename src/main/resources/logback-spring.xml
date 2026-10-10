@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!-- Simplified pattern using standard %xEx for exceptions -->
+    <property name="CONSOLE_LOG_PATTERN" value="%clr(%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX}){faint} %clr(%5p) %clr(${PID:- }){magenta} %clr(---){faint} %clr([%15.15t]){faint} %clr(%-40.40logger{39}){cyan} %clr(:){faint} [traceId=%X{traceId:-}] %m%n%xEx"/>
+
+    <!-- Pattern for file logs (keeps traceId/spanId, omits color codes) -->
+    <property name="FILE_LOG_PATTERN" value="%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %5p ${PID:- } --- [%15.15t] %-40.40logger{39} : [traceId=%X{traceId:-}] %m%n%xEx"/>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${CONSOLE_LOG_PATTERN}</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Rolling File Appender -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/booking.log</file>
+        <filter class="com.org.booking.config.AppointmentFlowFilter">
+            <flow>EMBASSY</flow>
+            <exclude>true</exclude>
+        </filter>
+        <filter class="com.org.booking.config.AppointmentFlowFilter">
+            <flow>VFS</flow>
+            <exclude>true</exclude>
+        </filter>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <!-- Rollover daily and when the file reaches 10MB -->
+            <fileNamePattern>logs/archived/booking-%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>10MB</maxFileSize>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${FILE_LOG_PATTERN}</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="EMBASSY_APPOINTMENT_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/embassy-appointment.log</file>
+        <filter class="com.org.booking.config.AppointmentFlowFilter">
+            <flow>EMBASSY</flow>
+        </filter>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>logs/archived/embassy-appointment-%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>10MB</maxFileSize>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${FILE_LOG_PATTERN}</pattern>
+        </encoder>
+    </appender>
+
+    <appender name="VFS_APPOINTMENT_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>logs/vfs-appointment.log</file>
+        <filter class="com.org.booking.config.AppointmentFlowFilter">
+            <flow>VFS</flow>
+        </filter>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>logs/archived/vfs-appointment-%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>10MB</maxFileSize>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${FILE_LOG_PATTERN}</pattern>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="FILE"/>
+        <appender-ref ref="EMBASSY_APPOINTMENT_FILE"/>
+        <appender-ref ref="VFS_APPOINTMENT_FILE"/>
+    </root>
+</configuration>
