@@ -27,6 +27,12 @@ public class VfsAppointmentService {
     private CredentialCooldownStore cooldownStore;
 
     @Autowired
+    private VfsLoginAttemptRepository loginAttemptRepository;
+
+    @Autowired
+    private VfsSlotAlertRepository slotAlertRepository;
+
+    @Autowired
     private EmailService emailService;
 
     @Autowired
@@ -115,7 +121,7 @@ public class VfsAppointmentService {
 
             try {
                 proceedAfterLogin(loginPage);
-                checkSlotAvailability(loginPage);
+                checkSlotAvailability(loginPage, cred.username());
             } catch (Exception e) {
                 log.error("Login succeeded for {}, but the appointment flow failed, Message: {}", cred.username(), e.getMessage());
             }
@@ -136,6 +142,7 @@ public class VfsAppointmentService {
             loginPage.waitForTimeout(1000);
 
             loginPage.click(vfsConfig.getLoginSubmitSelector());
+            Long attemptId = loginAttemptRepository.insert(cred.username(), false);
             loginPage.waitForTimeout(3000);
 
             if (loginPage.locator(vfsConfig.getLoginErrorSelector()).isVisible()) {
@@ -147,6 +154,7 @@ public class VfsAppointmentService {
                 return LoginOutcome.REJECTED;
             }
 
+            loginAttemptRepository.update(attemptId, true);
             return LoginOutcome.AUTHENTICATED;
 
         } catch (Exception e) {
@@ -212,7 +220,7 @@ public class VfsAppointmentService {
     }
 
     // ------------------ Slot Check ------------------
-    private void checkSlotAvailability(Page loginPage) {
+    private void checkSlotAvailability(Page loginPage, String email) {
         loginPage.onResponse(response -> {
             if (response.url().contains(vfsConfig.getSlotCheckResponseFragment())) {
                 log.info("Intercepted slot check response: {}", response.text());
@@ -224,6 +232,7 @@ public class VfsAppointmentService {
 
         String alertMessage = loginPage.locator(vfsConfig.getAlertSelector()).textContent().trim();
         log.info("Alert Message: {}", alertMessage);
+        slotAlertRepository.insert(email, alertMessage);
 
         if (alertMessage.contains(vfsConfig.getNoSlotsMessage())) {
             handleSlotNotFound();
