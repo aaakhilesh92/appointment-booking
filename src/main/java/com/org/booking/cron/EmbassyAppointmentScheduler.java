@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -14,6 +15,7 @@ import static com.org.booking.config.Constants.APPOINTMENT_FLOW;
 import static com.org.booking.config.Constants.EMBASSY;
 
 @Component
+@ConditionalOnProperty(name = "app.scheduler.embassy.enabled", havingValue = "true", matchIfMissing = true)
 public class EmbassyAppointmentScheduler {
 
     private static final Logger log = LoggerFactory.getLogger(EmbassyAppointmentScheduler.class);

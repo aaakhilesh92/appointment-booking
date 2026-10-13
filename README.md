@@ -1,6 +1,13 @@
 # appointment-booking
 Appointment Booking Process Automation
 
+## Scheduler switches
+
+Control the schedulers with the `APP_SCHEDULER_EMBASSY_ENABLED` and
+`APP_SCHEDULER_VFS_ENABLED` environment variables. Set a variable to `true` to
+enable its scheduler; both default to `false`. Their corresponding Spring
+properties are `app.scheduler.embassy.enabled` and `app.scheduler.vfs.enabled`.
+
 ## VFS login attempt tracking
 
 The application stores each VFS login submission in PostgreSQL in the
