@@ -49,7 +49,7 @@ public class EmailService {
             message.setSubject(getSubject(flow));
             message.setText("Slots are now available! Check the website immediately: " + getUrl(flow));
             Transport.send(message);
-            log.info("Email sent successfully to {} recipients!", config.getMailRecipients().length());
+            log.info("Email sent successfully to {} recipients!", config.getMailRecipients());
         } catch (MessagingException e) {
             log.error("Failed to send email: {}", e.getMessage());
         }

@@ -96,6 +96,9 @@ public class EmbassyConfig {
     @Value("${app.embassy.api.available-dates-message}")
     private String availableDatesMessage;
 
+    @Value("${app.embassy.api.all-slot-booked-message}")
+    private String allSlotBookedMessage;
+
     @Value("${app.embassy.api.month-query-parameter}")
     private String monthQueryParameter;
 
@@ -200,6 +203,10 @@ public class EmbassyConfig {
 
     public String getServiceLabelSelector() {
         return serviceLabelSelector;
+    }
+
+    public String getAllSlotBookedMessage() {
+        return allSlotBookedMessage;
     }
 
     public String getResidencePermitServiceLabel() {

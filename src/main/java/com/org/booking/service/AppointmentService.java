@@ -150,6 +150,7 @@ public class AppointmentService {
 
     private String checkSlots(List<HttpRequest> requests) {
         String slotFoundMessage = embassyConfig.getAvailableDatesMessage();
+        String allSlotBookedMessage = embassyConfig.getAllSlotBookedMessage();
         if (requests.isEmpty()) {
             log.warn("Cannot check embassy appointment slots without available-date requests");
             return STATUS_4XX;
@@ -174,11 +175,13 @@ public class AppointmentService {
                     continue;
                 }
 
+                URI uri = requests.get(i).uri();
+                log.info("Available Date API uri: {}, query:{} response: {}", uri, uri.getQuery(), response.body());
                 hasSuccessfulResponse = true;
                 String body = response.body().replace(embassyConfig.getQuoteCharacter(), StringUtils.EMPTY);
-                if (body.contains(slotFoundMessage)) {
+                if (body.contains(slotFoundMessage) || !body.contains(allSlotBookedMessage)) {
                     slotFound = true;
-                    writeDatesInFile(body, requests.get(i).uri().getQuery(), timestamp);
+                    writeDatesInFile(body, uri.getQuery(), timestamp);
                 }
             }
 
