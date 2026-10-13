@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.nio.file.Paths;
+import java.time.LocalDateTime;
 import java.util.*;
 
 import static com.org.booking.config.Constants.VFS;
@@ -62,21 +63,21 @@ public class VfsAppointmentService {
             LoginOutcome outcome = attemptFullLoginFlow(cred);
             if (outcome == LoginOutcome.AUTHENTICATED) {
                 cooldownStore.recordSuccess(id);
-                log.info("Login successful for {}. Consecutive failure count reset.", id);
+                log.info("Login successful for {}. Consecutive failure count reset. Time: {}", id, LocalDateTime.now());
                 authenticated = true;
-                break;
+                //break;
             }
             if (outcome == LoginOutcome.REJECTED) {
                 CredentialCooldownStore.FailureStatus status = cooldownStore.recordFailure(id);
                 if (status.isDisabled()) {
-                    log.error("Login rejected for {}. {} consecutive failures; disabled until {}.",
-                            id, status.consecutiveFailures(), status.disabledUntil());
+                    log.error("Login rejected for {}. Time: {}, {} consecutive failures; disabled until {}.",
+                            id, LocalDateTime.now(), status.consecutiveFailures(), status.disabledUntil());
                 } else {
-                    log.warn("Login rejected for {}. Consecutive failures: {}.",
-                            id, status.consecutiveFailures());
+                    log.warn("Login rejected for {}. Time: {}, Consecutive failures: {}.",
+                            id, LocalDateTime.now(), status.consecutiveFailures());
                 }
             } else {
-                log.error("Could not determine login result for {}. Failure count was not changed.", id);
+                log.error("Could not determine login result for {}. Time: {}, failure count was not changed.", id, LocalDateTime.now());
             }
         }
 
@@ -139,7 +140,7 @@ public class VfsAppointmentService {
             loginPage.waitForTimeout(1000);
 
             typeHumanLike(loginPage.locator(vfsConfig.getLoginPasswordSelector()), cred.password());
-            loginPage.waitForTimeout(1000);
+            loginPage.waitForTimeout(3000);
 
             loginPage.click(vfsConfig.getLoginSubmitSelector());
             Long attemptId = loginAttemptRepository.insert(cred.username(), false);

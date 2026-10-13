@@ -334,10 +334,10 @@ public class AppointmentService {
             }
 
             checkApiResponses(page, monthsToCheck);
+            //page.waitForTimeout(10 * 1000);
 
             // Find all table cells that have the active class
-            //selectActiveCalendarDate(wait);
-            //printAllCalendarDates(wait);
+            selectActiveCalendarDate(page);
         } catch (Exception e) {
             log.error("Exception occurred while checking appointment calendar dates, Message: {}", e.getMessage());
         }
