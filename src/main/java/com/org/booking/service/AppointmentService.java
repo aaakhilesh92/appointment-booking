@@ -16,6 +16,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import com.org.booking.config.EmbassyConfig;
@@ -57,6 +58,9 @@ public class AppointmentService {
     private EmbassyConfig embassyConfig;
 
     @Autowired
+    private PlaywrightBrowserPool playwrightBrowserPool;
+
+    @Autowired
     private SharedConfig sharedConfig;
 
     @Autowired
@@ -85,23 +89,29 @@ public class AppointmentService {
         Span span = tracer.nextSpan().name("embassy-candidate-booking").start();
         String previousFlow = MDC.get(APPOINTMENT_FLOW);
         MDC.put(APPOINTMENT_FLOW, EMBASSY);
+        long candidateStartNanos = System.nanoTime();
         try (Tracer.SpanInScope ignored = tracer.withSpan(span)) {
             log.info("Starting appointment booking process for candidate: {}", candidate.firstName());
-            try (Playwright playwright = Playwright.create()) {
-                Browser browser = initializeBrowser(playwright);
-                BrowserContext context = browser.newContext(new Browser.NewContextOptions().setViewportSize(null));
-                Page page = context.newPage();
-                page.setDefaultTimeout(Duration.ofSeconds(WAIT_TIMEOUT).toMillis());
-                // Complete Application Step 1 and Step 2
-                fillApplicationFormStep1AndStep2(page, candidate);
-                // Complete Final Step and submit the form
-                fillApplicationFormFinalStep(page, candidate);
-                context.close();
-                browser.close();
+            try {
+                Browser browser = playwrightBrowserPool.getBrowser();
+                BrowserContext context = browser.newContext(
+                        new Browser.NewContextOptions().setViewportSize(null));
+                try {
+                    Page page = context.newPage();
+                    page.setDefaultTimeout(Duration.ofSeconds(WAIT_TIMEOUT).toMillis());
+                    // Complete Application Step 1 and Step 2
+                    fillApplicationFormStep1AndStep2(page, candidate);
+                    // Complete Final Step and submit the form
+                    fillApplicationFormFinalStep(page, candidate);
+                } finally {
+                    context.close();
+                }
             } catch (Exception e) {
                 log.error("An Exception occurred during bookEmbassyAppointment for candidate {}, Message: {}",
-                        candidate.firstName(), e.getMessage());
+                        candidate.firstName(), e.getMessage(), e);
             }
+            log.info("Candidate booking process finished for {} in {} ms",
+                    candidate.firstName(), elapsedMillis(candidateStartNanos));
         } finally {
             span.end();
             if (previousFlow == null) {
@@ -395,7 +405,7 @@ public class AppointmentService {
             }
 
             checkApiResponses(page, monthsToCheck);
-            page.waitForTimeout(30 * 1000);
+            //page.waitForTimeout(30 * 1000);
 
             // Find all table cells that have the active class
             //selectActiveCalendarDate(page);
@@ -424,6 +434,30 @@ public class AppointmentService {
             log.info("AvailableMonthDates API [{}] | Response: {}", availableMonthDatesUrl, monthApiResponse);
             ld = ld.plusMonths(1);
         }
+    }
+
+    private <T> T timed(String step, Supplier<T> action) {
+        long startNanos = System.nanoTime();
+        log.info("Starting step: {}", step);
+        try {
+            T result = action.get();
+            log.info("Completed step: {} in {} ms", step, elapsedMillis(startNanos));
+            return result;
+        } catch (RuntimeException e) {
+            log.error("Step failed: {} after {} ms", step, elapsedMillis(startNanos), e);
+            throw e;
+        }
+    }
+
+    private void timedAction(String step, Runnable action) {
+        timed(step, () -> {
+            action.run();
+            return null;
+        });
+    }
+
+    private long elapsedMillis(long startNanos) {
+        return (System.nanoTime() - startNanos) / 1_000_000;
     }
 
     private void selectActiveCalendarDate(Page page) {
