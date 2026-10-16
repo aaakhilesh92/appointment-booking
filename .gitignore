@@ -38,4 +38,5 @@ out/
 logs/
 cookies.txt
 dates.txt
+candidates.txt
 /src/main/resources/application-dev.properties

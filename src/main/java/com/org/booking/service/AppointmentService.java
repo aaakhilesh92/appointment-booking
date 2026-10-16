@@ -1,5 +1,8 @@
 package com.org.booking.service;
 
+import java.io.BufferedReader;
+import java.io.FileReader;
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -11,6 +14,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 
@@ -23,11 +27,15 @@ import com.microsoft.playwright.Locator;
 import com.microsoft.playwright.Page;
 import com.microsoft.playwright.Playwright;
 import com.microsoft.playwright.options.Cookie;
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
 
 import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 
 import static com.org.booking.config.Constants.*;
@@ -57,20 +65,50 @@ public class AppointmentService {
     @Autowired
     private MediaPlayerService playerService;
 
+    @Autowired
+    @Qualifier("appointmentBookingExecutor")
+    private Executor appointmentBookingExecutor;
+
+    @Autowired
+    private Tracer tracer;
+
     public void bookEmbassyAppointment() {
-        try (Playwright playwright = Playwright.create()) {
-            Browser browser = initializeBrowser(playwright);
-            BrowserContext context = browser.newContext(new Browser.NewContextOptions().setViewportSize(null));
-            Page page = context.newPage();
-            page.setDefaultTimeout(Duration.ofSeconds(WAIT_TIMEOUT).toMillis());
-            // Complete Application Step 1 and Step 2
-            fillApplicationFormStep1AndStep2(page);
-            // Complete Final Step and submit the form
-            fillApplicationFormFinalStep(page);
-            context.close();
-            browser.close();
-        } catch (Exception e) {
-            log.error("An Exception occurred during bookEmbassyAppointment, Message: {}", e.getMessage());
+        List<Candidate> candidates = loadCandidates();
+        CompletableFuture<?>[] bookingTasks = candidates.stream()
+                .map(candidate -> CompletableFuture.runAsync(
+                        () -> bookAppointmentForCandidate(candidate), appointmentBookingExecutor))
+                .toArray(CompletableFuture[]::new);
+        CompletableFuture.allOf(bookingTasks).join();
+    }
+
+    private void bookAppointmentForCandidate(Candidate candidate) {
+        Span span = tracer.nextSpan().name("embassy-candidate-booking").start();
+        String previousFlow = MDC.get(APPOINTMENT_FLOW);
+        MDC.put(APPOINTMENT_FLOW, EMBASSY);
+        try (Tracer.SpanInScope ignored = tracer.withSpan(span)) {
+            log.info("Starting appointment booking process for candidate: {}", candidate.firstName());
+            try (Playwright playwright = Playwright.create()) {
+                Browser browser = initializeBrowser(playwright);
+                BrowserContext context = browser.newContext(new Browser.NewContextOptions().setViewportSize(null));
+                Page page = context.newPage();
+                page.setDefaultTimeout(Duration.ofSeconds(WAIT_TIMEOUT).toMillis());
+                // Complete Application Step 1 and Step 2
+                fillApplicationFormStep1AndStep2(page, candidate);
+                // Complete Final Step and submit the form
+                fillApplicationFormFinalStep(page, candidate);
+                context.close();
+                browser.close();
+            } catch (Exception e) {
+                log.error("An Exception occurred during bookEmbassyAppointment for candidate {}, Message: {}",
+                        candidate.firstName(), e.getMessage());
+            }
+        } finally {
+            span.end();
+            if (previousFlow == null) {
+                MDC.remove(APPOINTMENT_FLOW);
+            } else {
+                MDC.put(APPOINTMENT_FLOW, previousFlow);
+            }
         }
     }
 
@@ -95,6 +133,29 @@ public class AppointmentService {
             handleInvalidCookie();
         }
     }
+
+    private List<Candidate> loadCandidates() {
+        // Load candidate details from candidates.txt
+        List<Candidate> candidates = new ArrayList<>();
+        try (BufferedReader reader = new BufferedReader(new FileReader("candidates.txt"))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                String[] parts = line.split(",");
+                if (parts.length >= 5) {
+                    candidates.add(new Candidate(parts[0], parts[1], parts[2], parts[3], parts[4]));
+                }
+            }
+        } catch (IOException e) {
+            log.error("Error occurred while loading candidates from file. Message: {}", e.getMessage());
+        }
+        return candidates;
+    }
+
+    private Candidate loadCandidate() {
+        return new Candidate(embassyConfig.getFirstName(), embassyConfig.getLastName(), embassyConfig.getEmail(),
+                embassyConfig.getPhone(), embassyConfig.getInvitationNumber());
+    }
+
 
     private void handleSlotFound() {
         log.info("!!! EMBASSY SLOTS FOUND !!! Check the website immediately.");
@@ -212,29 +273,29 @@ public class AppointmentService {
         }
     }
 
-    private void fillApplicationFormStep1AndStep2(Page page) {
-        fillStep1Form(page);
+    private void fillApplicationFormStep1AndStep2(Page page, Candidate candidate) {
+        fillStep1Form(page, candidate);
         fillStep2Form(page);
     }
 
-    private void fillApplicationFormFinalStep(Page page) {
+    private void fillApplicationFormFinalStep(Page page, Candidate candidate) {
         try {
             selectAppointmentDate(page);
-            finalStep(page);
+            finalStep(page, candidate);
         } catch (Exception e) {
-            log.error("An error occurred during fillApplicationFormFinalStep: {}", e.getMessage());
+            log.error("An error occurred during fillApplicationFormFinalStep for {}: {}", candidate.firstName(), e.getMessage());
         }
     }
 
     private String retrieveAndSaveNewCookie() {
-        String cookie = retrieveCookieFromApplicationForm();
+        String cookie = retrieveCookieFromApplicationForm(loadCandidate());
         if (cookie != null && !cookie.isBlank()) {
             saveCookieToFile(cookie);
         }
         return cookie;
     }
 
-    private String retrieveCookieFromApplicationForm() {
+    private String retrieveCookieFromApplicationForm(Candidate candidate) {
         String cookie;
         try (Playwright playwright = Playwright.create()) {
             Browser browser = initializeBrowser(playwright);
@@ -242,7 +303,7 @@ public class AppointmentService {
             Page page = context.newPage();
             page.setDefaultTimeout(Duration.ofSeconds(WAIT_TIMEOUT).toMillis());
             // Complete Application Step 1 and Step 2
-            fillApplicationFormStep1AndStep2(page);
+            fillApplicationFormStep1AndStep2(page, candidate);
 
             // Reaching Calendar Step 3 & extracting cookies
             page.waitForURL(embassyConfig.getStepThreeUrlPattern());
@@ -270,16 +331,16 @@ public class AppointmentService {
         return playwright.chromium().launch(options);
     }
 
-    private void fillStep1Form(Page page) {
+    private void fillStep1Form(Page page, Candidate candidate) {
         log.info("Opening Embassy Portal... Step 1");
         page.navigate(embassyConfig.getBaseUrl() + embassyConfig.getIndexPath());
 
         //log.info("Filling Visitor 1 details...");
-        page.locator(embassyConfig.getFirstNameSelector()).fill(embassyConfig.getFirstName());
-        page.locator(embassyConfig.getLastNameSelector()).fill(embassyConfig.getLastName());
-        page.locator(embassyConfig.getEmailSelector()).fill(embassyConfig.getEmail());
-        page.locator(embassyConfig.getEmailRepeatSelector()).fill(embassyConfig.getEmail());
-        page.locator(embassyConfig.getPhoneSelector()).fill(embassyConfig.getPhone());
+        page.locator(embassyConfig.getFirstNameSelector()).fill(candidate.firstName());
+        page.locator(embassyConfig.getLastNameSelector()).fill(candidate.lastName());
+        page.locator(embassyConfig.getEmailSelector()).fill(candidate.email());
+        page.locator(embassyConfig.getEmailRepeatSelector()).fill(candidate.email());
+        page.locator(embassyConfig.getPhoneSelector()).fill(candidate.phone());
         page.locator(embassyConfig.getNextStepSelector()).click();
     }
 
@@ -334,10 +395,10 @@ public class AppointmentService {
             }
 
             checkApiResponses(page, monthsToCheck);
-            //page.waitForTimeout(10 * 1000);
+            page.waitForTimeout(30 * 1000);
 
             // Find all table cells that have the active class
-            selectActiveCalendarDate(page);
+            //selectActiveCalendarDate(page);
         } catch (Exception e) {
             log.error("Exception occurred while checking appointment calendar dates, Message: {}", e.getMessage());
         }
@@ -366,18 +427,22 @@ public class AppointmentService {
     }
 
     private void selectActiveCalendarDate(Page page) {
-        Locator availableDates = page.locator(embassyConfig.getActiveDateSelector());
-        int count = availableDates.count();
-        if (count > 0) {
-            // Example: Click the very first available date
-            Locator targetDate = availableDates.nth(count - 1);
-            String dateValue = targetDate.getAttribute(embassyConfig.getDateAttributeName());
+        try {
+            Locator availableDates = page.locator(embassyConfig.getActiveDateSelector());
+            int count = availableDates.count();
+            if (count > 0) {
+                // Example: Click the very first available date
+                Locator targetDate = availableDates.nth(count - 1);
+                String dateValue = targetDate.getAttribute(embassyConfig.getDateAttributeName());
 
-            targetDate.click();
-            log.info("Successfully selected available date: {}", dateValue);
-            writeDatesInFile(null, dateValue, LocalDateTime.now().toString());
-        } else {
-            log.info("No available dates found in the current view.");
+                targetDate.click();
+                log.info("Successfully selected available date: {}", dateValue);
+                writeDatesInFile(null, dateValue, LocalDateTime.now().toString());
+            } else {
+                log.info("No available dates found in the current view.");
+            }
+        } catch (Exception e) {
+            log.error("Failed to select an available date: {}", e.getMessage());
         }
     }
 
@@ -395,7 +460,7 @@ public class AppointmentService {
         }
     }
 
-    private void finalStep(Page page) {
+    private void finalStep(Page page, Candidate candidate) {
         log.info("FinalStep# providing InvitationNumber");
         //log.info("----------- finalStep completed -----------");
     }

@@ -41,7 +41,7 @@ public class EmbassyAppointmentScheduler {
         }
     }
 
-    @Scheduled(fixedRate = 60 * 1000)
+    //@Scheduled(fixedRate = 60 * 1000)
     public void checkAppointment() throws Exception {
         MDC.put(APPOINTMENT_FLOW, EMBASSY);
         long startTime = System.currentTimeMillis();
