@@ -30,7 +30,6 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -71,7 +70,6 @@ public class AppointmentService {
 
     private final AtomicLong lastNoSlotNotificationTime = new AtomicLong();
     private final AtomicInteger activeDateSelectionCounter = new AtomicInteger();
-    private final AtomicReference<LocalDate> lastBookingDate = new AtomicReference<>();
     private final Set<String> selectedActiveCalendarDates = ConcurrentHashMap.newKeySet();
 
     @Autowired
@@ -176,15 +174,10 @@ public class AppointmentService {
                 INTERNET_TIME_FORMAT.format(istNow), INTERNET_TIME_FORMAT.format(eetNow));
 
         LocalDate bookingDate = istNow.toLocalDate();
-        if (bookingDate.equals(lastBookingDate.get())) {
-            log.info("Skipping embassy booking: today's 9:00 AM IST run has already started.");
-            return false;
-        }
-
         Instant targetInstant = bookingDate.atTime(BOOKING_TIME_IST).atZone(IST_ZONE).toInstant();
         Duration waitDuration = Duration.between(internetInstant, targetInstant);
-        if (waitDuration.compareTo(BOOKING_WINDOW) > 0) {
-            log.info("Skipping embassy booking: internet time is more than 15 minutes before 9:00 AM IST.");
+        if (waitDuration.abs().compareTo(BOOKING_WINDOW) > 0) {
+            log.info("Skipping embassy booking: internet time is more than 15 minutes away from the 9:00 AM IST target.");
             return false;
         }
 
@@ -206,18 +199,7 @@ public class AppointmentService {
             }
         }
 
-        while (true) {
-            LocalDate previousRun = lastBookingDate.get();
-            if (bookingDate.equals(previousRun)) {
-                log.info("Skipping embassy booking: today's 9:00 AM IST run has already started.");
-                return false;
-            }
-            if (lastBookingDate.compareAndSet(previousRun, bookingDate)) {
-                break;
-            }
-        }
-
-        log.info("Starting embassy booking flow at the 9:00 AM IST target for {}.", bookingDate);
+        log.info("Booking flow is allowed for {} within the configured time window.", bookingDate);
         return true;
     }
 
@@ -502,14 +484,16 @@ public class AppointmentService {
 
             boolean slotFound = checkApiResponses(page, monthsToCheck);
             if (slotFound) {
-                //waitForManualInput(candidate);
-                page.waitForTimeout(30 * 1000);
                 log.info("!!! EMBASSY SLOTS FOUND for month !!! Check the website immediately.");
+                if (candidate.firstName().equalsIgnoreCase("Akhilesh")) {
+                    selectActiveCalendarDate(page, candidate);
+                    //selectSpecificDate(page, "2026-12-15");
+                } else {
+                    //waitForManualInput(candidate);
+                    page.waitForTimeout(30 * 1000);
+                }
             }
-            if (candidate.firstName().equalsIgnoreCase("Akhilesh")) {
-                selectActiveCalendarDate(page, candidate);
-                //selectSpecificDate(page, "2026-12-15");
-            }
+
         } catch (Exception e) {
             log.error("Exception occurred while checking appointment calendar dates, Message: {}", e.getMessage());
         }
@@ -525,19 +509,23 @@ public class AppointmentService {
     private boolean checkAvailableMonthDatesApiResponse(Page page, int count) {
         LocalDate ld = LocalDate.now();
         boolean slotFound = false;
-        for (int i = 0; i < count; i++) {
-            String availableMonthDatesUrl = new StringBuilder(embassyConfig.getAvailableDateUrl())
-                    .append(ld.getYear())
-                    .append(embassyConfig.getMonthQueryParameter())
-                    .append(ld.getMonthValue())
-                    .toString();
+        try {
+            for (int i = 0; i < count; i++) {
+                String availableMonthDatesUrl = new StringBuilder(embassyConfig.getAvailableDateUrl())
+                        .append(ld.getYear())
+                        .append(embassyConfig.getMonthQueryParameter())
+                        .append(ld.getMonthValue())
+                        .toString();
 
-            String monthApiResponse = checkApiResponseViaBrowser(page, availableMonthDatesUrl);
-            if (monthApiResponse != null && !monthApiResponse.contains(embassyConfig.getAllSlotBookedMessage())) {
-                slotFound = true;
+                String monthApiResponse = checkApiResponseViaBrowser(page, availableMonthDatesUrl);
+                if (monthApiResponse != null && !monthApiResponse.contains(embassyConfig.getAllSlotBookedMessage())) {
+                    slotFound = true;
+                }
+                log.info("AvailableMonthDates API [{}] | Response: {}", availableMonthDatesUrl, monthApiResponse);
+                ld = ld.plusMonths(1);
             }
-            log.info("AvailableMonthDates API [{}] | Response: {}", availableMonthDatesUrl, monthApiResponse);
-            ld = ld.plusMonths(1);
+        } catch (Exception e) {
+            log.error("Exception occurred while checking available month dates API response, Message: {}", e.getMessage());
         }
         return slotFound;
     }
