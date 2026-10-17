@@ -26,6 +26,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
@@ -67,6 +68,7 @@ public class AppointmentService {
     private final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
 
     private final AtomicLong lastNoSlotNotificationTime = new AtomicLong();
+    private final AtomicInteger activeDateSelectionCounter = new AtomicInteger();
     private final AtomicReference<LocalDate> lastBookingDate = new AtomicReference<>();
 
     @Autowired
@@ -101,7 +103,9 @@ public class AppointmentService {
         }
 
         List<Candidate> candidates = loadCandidates();
-        CompletableFuture<?>[] bookingTasks = candidates.stream().map(candidate -> CompletableFuture.runAsync(() -> bookAppointmentForCandidate(candidate), appointmentBookingExecutor)).toArray(CompletableFuture[]::new);
+        CompletableFuture<?>[] bookingTasks = candidates.stream()
+                .map(candidate -> CompletableFuture.runAsync(() -> bookAppointmentForCandidate(candidate), appointmentBookingExecutor))
+                .toArray(CompletableFuture[]::new);
         CompletableFuture.allOf(bookingTasks).join();
     }
 
@@ -142,13 +146,18 @@ public class AppointmentService {
     }
 
     private boolean waitUntilBookingTime() throws IOException, InterruptedException {
-        HttpRequest request = HttpRequest.newBuilder(INTERNET_TIME_URI).timeout(Duration.ofSeconds(5)).method("HEAD", HttpRequest.BodyPublishers.noBody()).build();
+        HttpRequest request = HttpRequest.newBuilder(INTERNET_TIME_URI)
+                .timeout(Duration.ofSeconds(5))
+                .method("HEAD", HttpRequest.BodyPublishers.noBody())
+                .build();
         HttpResponse<Void> response = client.send(request, HttpResponse.BodyHandlers.discarding());
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new IOException("Internet time request returned HTTP " + response.statusCode());
         }
 
-        String dateHeader = response.headers().firstValue("Date").orElseThrow(() -> new IOException("Internet time response has no Date header"));
+        String dateHeader = response.headers()
+                .firstValue("Date")
+                .orElseThrow(() -> new IOException("Internet time response has no Date header"));
         Instant internetInstant;
         try {
             internetInstant = DateTimeFormatter.RFC_1123_DATE_TIME.parse(dateHeader, Instant::from);
@@ -158,7 +167,8 @@ public class AppointmentService {
 
         ZonedDateTime istNow = internetInstant.atZone(IST_ZONE);
         ZonedDateTime eetNow = internetInstant.atZone(EET_ZONE);
-        log.info("Internet time | IST: {} | Europe/Riga (EET/EEST): {}", INTERNET_TIME_FORMAT.format(istNow), INTERNET_TIME_FORMAT.format(eetNow));
+        log.info("Internet time | IST: {} | Europe/Riga (EET/EEST): {}",
+                INTERNET_TIME_FORMAT.format(istNow), INTERNET_TIME_FORMAT.format(eetNow));
 
         LocalDate bookingDate = istNow.toLocalDate();
         if (bookingDate.equals(lastBookingDate.get())) {
@@ -246,7 +256,8 @@ public class AppointmentService {
     }
 
     private Candidate loadCandidate() {
-        return new Candidate(embassyConfig.getFirstName(), embassyConfig.getLastName(), embassyConfig.getEmail(), embassyConfig.getPhone(), embassyConfig.getInvitationNumber());
+        return new Candidate(embassyConfig.getFirstName(), embassyConfig.getLastName(), embassyConfig.getEmail(),
+                embassyConfig.getPhone(), embassyConfig.getInvitationNumber());
     }
 
 
@@ -263,7 +274,8 @@ public class AppointmentService {
         long lastNotification = lastNoSlotNotificationTime.get();
         long notificationInterval = sharedConfig.getNoSlotNotificationIntervalMs();
         if (now - lastNotification < notificationInterval) {
-            log.info("Skipping Embassy no-slot notification; next notification is allowed in {} seconds.", (notificationInterval - (now - lastNotification)) / 1000);
+            log.info("Skipping Embassy no-slot notification; next notification is allowed in {} seconds.",
+                    (notificationInterval - (now - lastNotification)) / 1000);
             return;
         }
 
@@ -309,10 +321,12 @@ public class AppointmentService {
         }
 
         try {
-            List<CompletableFuture<HttpResponse<String>>> responses = requests.stream().map(request -> client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).exceptionally(error -> {
-                log.warn("Available-date request failed for {}", request.uri(), error);
-                return null;
-            })).toList();
+            List<CompletableFuture<HttpResponse<String>>> responses = requests.stream().map(request ->
+                    client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
+                            .exceptionally(error -> {
+                                log.warn("Available-date request failed for {}", request.uri(), error);
+                                return null;
+                            })).toList();
             CompletableFuture.allOf(responses.toArray(CompletableFuture[]::new)).join();
 
             String timestamp = LocalDateTime.now().toString();
@@ -373,7 +387,8 @@ public class AppointmentService {
             selectAppointmentDate(page, candidate);
             finalStep(page, candidate);
         } catch (Exception e) {
-            log.error("An error occurred during fillApplicationFormFinalStep for {}: {}", candidate.firstName(), e.getMessage());
+            log.error("An error occurred during fillApplicationFormFinalStep for {}: {}",
+                    candidate.firstName(), e.getMessage());
         }
     }
 
@@ -401,7 +416,9 @@ public class AppointmentService {
             page.waitForTimeout(1000);
 
             List<Cookie> allCookies = context.cookies();
-            cookie = allCookies.stream().map(c -> c.name + embassyConfig.getCookieNameValueSeparator() + c.value).collect(Collectors.joining(embassyConfig.getCookieSeparator()));
+            cookie = allCookies.stream()
+                    .map(c -> c.name + embassyConfig.getCookieNameValueSeparator() + c.value)
+                    .collect(Collectors.joining(embassyConfig.getCookieSeparator()));
 
             context.close();
             browser.close();
@@ -413,7 +430,9 @@ public class AppointmentService {
     }
 
     private Browser initializeBrowser(Playwright playwright) {
-        BrowserType.LaunchOptions options = new BrowserType.LaunchOptions().setHeadless(false).setArgs(Arrays.asList(embassyConfig.getBrowserArgs()));
+        BrowserType.LaunchOptions options = new BrowserType.LaunchOptions()
+                .setHeadless(false)
+                .setArgs(Arrays.asList(embassyConfig.getBrowserArgs()));
         return playwright.chromium().launch(options);
     }
 
@@ -551,21 +570,21 @@ public class AppointmentService {
             log.info("Number of available dates found: {} for {}", count, candidate.firstName());
 
             if (count > 0) {
-                String dateValueAll = "";
+                StringBuilder dateValueAll = new StringBuilder();
                 for (int i = 0; i < count; i++) {
                     Locator dateLocator = availableDates.nth(i);
                     String dateValue = dateLocator.getAttribute(embassyConfig.getDateAttributeName());
                     log.info("Available date found: {}", dateValue);
-                    dateValueAll += dateValue + ", ";
+                    dateValueAll.append(dateValue).append(", ");
                 }
 
-                // Example: Click the very first available date
-                Locator targetDate = availableDates.nth(count - 1);
+                int dateIndex = Math.floorMod(activeDateSelectionCounter.getAndIncrement(), count);
+                Locator targetDate = availableDates.nth(dateIndex);
                 String dateValue = targetDate.getAttribute(embassyConfig.getDateAttributeName());
 
                 targetDate.click();
-                log.info("Successfully selected available date: {}", dateValue);
-                writeDatesInFile(null, dateValueAll, LocalDateTime.now().toString());
+                log.info("Successfully selected available date: {}, dateIndex : {}", dateValue, dateIndex);
+                writeDatesInFile(null, dateValueAll.toString(), LocalDateTime.now().toString());
             } else {
                 log.info("No available dates found in the current view.");
             }
