@@ -24,7 +24,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -70,6 +72,7 @@ public class AppointmentService {
     private final AtomicLong lastNoSlotNotificationTime = new AtomicLong();
     private final AtomicInteger activeDateSelectionCounter = new AtomicInteger();
     private final AtomicReference<LocalDate> lastBookingDate = new AtomicReference<>();
+    private final Set<String> selectedActiveCalendarDates = ConcurrentHashMap.newKeySet();
 
     @Autowired
     private EmailService emailService;
@@ -103,6 +106,8 @@ public class AppointmentService {
         }
 
         List<Candidate> candidates = loadCandidates();
+        selectedActiveCalendarDates.clear();
+        activeDateSelectionCounter.set(0);
         CompletableFuture<?>[] bookingTasks = candidates.stream()
                 .map(candidate -> CompletableFuture.runAsync(() -> bookAppointmentForCandidate(candidate), appointmentBookingExecutor))
                 .toArray(CompletableFuture[]::new);
@@ -581,24 +586,40 @@ public class AppointmentService {
                 String dateValue = null;
                 int dateIndex = -1;
                 boolean clickedSuccess = false;
-                int attemptAllowed = 3;
+                int attemptAllowed = 4;
                 for (int attempt = 0; attempt < attemptAllowed; attempt++) {
                     dateIndex = Math.floorMod(activeDateSelectionCounter.getAndIncrement(), count);
+                    String candidateDateValue = null;
+                    boolean dateReserved = false;
                     try {
                         Locator targetDate = availableDates.nth(dateIndex);
-                        dateValue = targetDate.getAttribute(embassyConfig.getDateAttributeName());
+                        candidateDateValue = targetDate.getAttribute(embassyConfig.getDateAttributeName());
+                        if (candidateDateValue == null || candidateDateValue.isBlank()) {
+                            log.warn("Skipping available date at index {} because it has no date value", dateIndex);
+                            continue;
+                        }
+                        if (!selectedActiveCalendarDates.add(candidateDateValue)) {
+                            log.info("Skipping date {} at index {} because another thread already claimed it",
+                                    candidateDateValue, dateIndex);
+                            continue;
+                        }
+                        dateReserved = true;
                         log.info("Attempting to click on the available date at index {}: {} for {}",
-                                dateIndex, dateValue, candidate.firstName());
+                                dateIndex, candidateDateValue, candidate.firstName());
                         targetDate.click();
+                        dateValue = candidateDateValue;
                         clickedSuccess = true;
                         break;
                     } catch (Exception e) {
+                        if (dateReserved) {
+                            selectedActiveCalendarDates.remove(candidateDateValue);
+                        }
                         log.warn("Failed to click on the available date at index {} for {}; trying the next date",
                                 dateIndex, candidate.firstName(), e);
                     }
                 }
                 if (!clickedSuccess) {
-                    log.error("Failed to click any of the {} available dates for {}", count, candidate.firstName());
+                    log.error("Failed to click any unclaimed available date for {}", candidate.firstName());
                     return;
                 }
                 log.info("Successfully selected available date: {}, dateIndex : {}", dateValue, dateIndex);
