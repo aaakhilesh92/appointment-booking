@@ -3,19 +3,31 @@ package com.org.booking.service;
 import java.io.BufferedReader;
 import java.io.FileReader;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
@@ -44,12 +56,18 @@ import static com.org.booking.config.Constants.*;
 @Service
 public class AppointmentService {
     private static final Logger log = LoggerFactory.getLogger(AppointmentService.class);
+    private static final BufferedReader CONSOLE_INPUT = new BufferedReader(new InputStreamReader(System.in));
+    private static final URI INTERNET_TIME_URI = URI.create("https://www.google.com/generate_204");
+    private static final ZoneId IST_ZONE = ZoneId.of("Asia/Kolkata");
+    private static final ZoneId EET_ZONE = ZoneId.of("Europe/Riga");
+    private static final LocalTime BOOKING_TIME_IST = LocalTime.of(9, 0);
+    private static final Duration BOOKING_WINDOW = Duration.ofMinutes(TIME_WINDOW);
+    private static final DateTimeFormatter INTERNET_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss z (XXX)");
 
-    private final HttpClient client = HttpClient.newBuilder()
-            .connectTimeout(Duration.ofSeconds(10))
-            .build();
+    private final HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
 
     private final AtomicLong lastNoSlotNotificationTime = new AtomicLong();
+    private final AtomicReference<LocalDate> lastBookingDate = new AtomicReference<>();
 
     @Autowired
     private EmailService emailService;
@@ -76,12 +94,14 @@ public class AppointmentService {
     @Autowired
     private Tracer tracer;
 
-    public void bookEmbassyAppointment() {
+    public void bookEmbassyAppointment() throws IOException, InterruptedException {
+        if (!waitUntilBookingTime()) {
+            log.info("Skipping embassy booking: not within the 15-minute booking window");
+            return;
+        }
+
         List<Candidate> candidates = loadCandidates();
-        CompletableFuture<?>[] bookingTasks = candidates.stream()
-                .map(candidate -> CompletableFuture.runAsync(
-                        () -> bookAppointmentForCandidate(candidate), appointmentBookingExecutor))
-                .toArray(CompletableFuture[]::new);
+        CompletableFuture<?>[] bookingTasks = candidates.stream().map(candidate -> CompletableFuture.runAsync(() -> bookAppointmentForCandidate(candidate), appointmentBookingExecutor)).toArray(CompletableFuture[]::new);
         CompletableFuture.allOf(bookingTasks).join();
     }
 
@@ -94,8 +114,7 @@ public class AppointmentService {
             log.info("Starting appointment booking process for candidate: {}", candidate.firstName());
             try {
                 Browser browser = playwrightBrowserPool.getBrowser();
-                BrowserContext context = browser.newContext(
-                        new Browser.NewContextOptions().setViewportSize(null));
+                BrowserContext context = browser.newContext(new Browser.NewContextOptions().setViewportSize(null));
                 try {
                     Page page = context.newPage();
                     page.setDefaultTimeout(Duration.ofSeconds(WAIT_TIMEOUT).toMillis());
@@ -120,6 +139,71 @@ public class AppointmentService {
                 MDC.put(APPOINTMENT_FLOW, previousFlow);
             }
         }
+    }
+
+    private boolean waitUntilBookingTime() throws IOException, InterruptedException {
+        HttpRequest request = HttpRequest.newBuilder(INTERNET_TIME_URI).timeout(Duration.ofSeconds(5)).method("HEAD", HttpRequest.BodyPublishers.noBody()).build();
+        HttpResponse<Void> response = client.send(request, HttpResponse.BodyHandlers.discarding());
+        if (response.statusCode() < 200 || response.statusCode() >= 300) {
+            throw new IOException("Internet time request returned HTTP " + response.statusCode());
+        }
+
+        String dateHeader = response.headers().firstValue("Date").orElseThrow(() -> new IOException("Internet time response has no Date header"));
+        Instant internetInstant;
+        try {
+            internetInstant = DateTimeFormatter.RFC_1123_DATE_TIME.parse(dateHeader, Instant::from);
+        } catch (DateTimeParseException e) {
+            throw new IOException("Internet time response has an invalid Date header", e);
+        }
+
+        ZonedDateTime istNow = internetInstant.atZone(IST_ZONE);
+        ZonedDateTime eetNow = internetInstant.atZone(EET_ZONE);
+        log.info("Internet time | IST: {} | Europe/Riga (EET/EEST): {}", INTERNET_TIME_FORMAT.format(istNow), INTERNET_TIME_FORMAT.format(eetNow));
+
+        LocalDate bookingDate = istNow.toLocalDate();
+        if (bookingDate.equals(lastBookingDate.get())) {
+            log.info("Skipping embassy booking: today's 9:00 AM IST run has already started.");
+            return false;
+        }
+
+        Instant targetInstant = bookingDate.atTime(BOOKING_TIME_IST).atZone(IST_ZONE).toInstant();
+        Duration waitDuration = Duration.between(internetInstant, targetInstant);
+        if (waitDuration.compareTo(BOOKING_WINDOW) > 0) {
+            log.info("Skipping embassy booking: internet time is more than 15 minutes before 9:00 AM IST.");
+            return false;
+        }
+
+        if (!waitDuration.isZero()) {
+            log.info("Within the 15-minute booking window; waiting {} ms until 9:00 AM IST.", waitDuration.toMillis());
+            playerService.playSound(sharedConfig.getRingtoneCrawling());
+            long remainingNanos = waitDuration.toNanos();
+            long waitStartedNanos = System.nanoTime();
+            while (remainingNanos > 0) {
+                long millis = remainingNanos / 1_000_000;
+                int nanos = (int) (remainingNanos % 1_000_000);
+                try {
+                    Thread.sleep(millis, nanos);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw e;
+                }
+                remainingNanos = waitDuration.toNanos() - (System.nanoTime() - waitStartedNanos);
+            }
+        }
+
+        while (true) {
+            LocalDate previousRun = lastBookingDate.get();
+            if (bookingDate.equals(previousRun)) {
+                log.info("Skipping embassy booking: today's 9:00 AM IST run has already started.");
+                return false;
+            }
+            if (lastBookingDate.compareAndSet(previousRun, bookingDate)) {
+                break;
+            }
+        }
+
+        log.info("Starting embassy booking flow at the 9:00 AM IST target for {}.", bookingDate);
+        return true;
     }
 
     public void checkEmbassyAppointment() {
@@ -162,8 +246,7 @@ public class AppointmentService {
     }
 
     private Candidate loadCandidate() {
-        return new Candidate(embassyConfig.getFirstName(), embassyConfig.getLastName(), embassyConfig.getEmail(),
-                embassyConfig.getPhone(), embassyConfig.getInvitationNumber());
+        return new Candidate(embassyConfig.getFirstName(), embassyConfig.getLastName(), embassyConfig.getEmail(), embassyConfig.getPhone(), embassyConfig.getInvitationNumber());
     }
 
 
@@ -180,12 +263,12 @@ public class AppointmentService {
         long lastNotification = lastNoSlotNotificationTime.get();
         long notificationInterval = sharedConfig.getNoSlotNotificationIntervalMs();
         if (now - lastNotification < notificationInterval) {
-            log.info("Skipping Embassy no-slot notification; next notification is allowed in {} seconds.",
-                    (notificationInterval - (now - lastNotification)) / 1000);
+            log.info("Skipping Embassy no-slot notification; next notification is allowed in {} seconds.", (notificationInterval - (now - lastNotification)) / 1000);
             return;
         }
 
         String availableDates = fetchAvailableDates(cookie);
+        log.info("Embassy no-slot notification: available dates response: {}", availableDates);
         if (telegramService.sendTelegramNoSlotNotification(EMBASSY, availableDates)) {
             lastNoSlotNotificationTime.set(System.currentTimeMillis());
         } else {
@@ -196,9 +279,7 @@ public class AppointmentService {
 
     private String fetchAvailableDates(String cookie) {
         try {
-            HttpResponse<String> response = client.send(
-                    buildDateApiRequest(cookie),
-                    HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> response = client.send(buildDateApiRequest(cookie), HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() != 200 || response.body() == null) {
                 log.warn("Available-dates request failed with status {}", response.statusCode());
                 return NO_DATE;
@@ -228,13 +309,10 @@ public class AppointmentService {
         }
 
         try {
-            List<CompletableFuture<HttpResponse<String>>> responses = requests.stream()
-                    .map(request -> client.sendAsync(request, HttpResponse.BodyHandlers.ofString())
-                            .exceptionally(error -> {
-                                log.warn("Available-date request failed for {}", request.uri(), error);
-                                return null;
-                            }))
-                    .toList();
+            List<CompletableFuture<HttpResponse<String>>> responses = requests.stream().map(request -> client.sendAsync(request, HttpResponse.BodyHandlers.ofString()).exceptionally(error -> {
+                log.warn("Available-date request failed for {}", request.uri(), error);
+                return null;
+            })).toList();
             CompletableFuture.allOf(responses.toArray(CompletableFuture[]::new)).join();
 
             String timestamp = LocalDateTime.now().toString();
@@ -273,8 +351,7 @@ public class AppointmentService {
         try (java.io.FileWriter writer = new java.io.FileWriter(embassyConfig.getDatesFile(), true)) {
             String temp = embassyConfig.getDateEntrySeparator();
             String valueSeparator = embassyConfig.getDateEntryValueSeparator();
-            writer.write(temp + valueSeparator + timestamp + valueSeparator + monthYear
-                    + valueSeparator + temp + System.lineSeparator());
+            writer.write(temp + valueSeparator + timestamp + valueSeparator + monthYear + valueSeparator + temp + System.lineSeparator());
             if (dateString != null) {
                 writer.write(dateString + System.lineSeparator());
             }
@@ -290,7 +367,10 @@ public class AppointmentService {
 
     private void fillApplicationFormFinalStep(Page page, Candidate candidate) {
         try {
-            selectAppointmentDate(page);
+            String windowTitle = "Appointment - " + candidate.firstName();
+            page.evaluate("title => { document.title = title; }", windowTitle);
+            log.info("Manual invitation number entry will be in the Chrome window titled '{}'.", windowTitle);
+            selectAppointmentDate(page, candidate);
             finalStep(page, candidate);
         } catch (Exception e) {
             log.error("An error occurred during fillApplicationFormFinalStep for {}: {}", candidate.firstName(), e.getMessage());
@@ -321,9 +401,7 @@ public class AppointmentService {
             page.waitForTimeout(1000);
 
             List<Cookie> allCookies = context.cookies();
-            cookie = allCookies.stream()
-                    .map(c -> c.name + embassyConfig.getCookieNameValueSeparator() + c.value)
-                    .collect(Collectors.joining(embassyConfig.getCookieSeparator()));
+            cookie = allCookies.stream().map(c -> c.name + embassyConfig.getCookieNameValueSeparator() + c.value).collect(Collectors.joining(embassyConfig.getCookieSeparator()));
 
             context.close();
             browser.close();
@@ -335,9 +413,7 @@ public class AppointmentService {
     }
 
     private Browser initializeBrowser(Playwright playwright) {
-        BrowserType.LaunchOptions options = new BrowserType.LaunchOptions()
-                .setHeadless(false)
-                .setArgs(Arrays.asList(embassyConfig.getBrowserArgs()));
+        BrowserType.LaunchOptions options = new BrowserType.LaunchOptions().setHeadless(false).setArgs(Arrays.asList(embassyConfig.getBrowserArgs()));
         return playwright.chromium().launch(options);
     }
 
@@ -359,25 +435,21 @@ public class AppointmentService {
         page.waitForURL(embassyConfig.getStepTwoUrlPattern());
         page.locator(embassyConfig.getServicesSelector()).click();
 
-        page.locator(embassyConfig.getServiceLabelSelector(), new Page.LocatorOptions().setHasText(
-                embassyConfig.getResidencePermitServiceLabel())).click();
+        page.locator(embassyConfig.getServiceLabelSelector(), new Page.LocatorOptions().setHasText(embassyConfig.getResidencePermitServiceLabel())).click();
 
-        page.locator(embassyConfig.getActiveConfirmationSelector())
-                .evaluate(embassyConfig.getConfirmationClickScript());
+        page.locator(embassyConfig.getActiveConfirmationSelector()).evaluate(embassyConfig.getConfirmationClickScript());
 
         page.locator(embassyConfig.getServiceButtonSelector()).click();
         //log.info("Add button clicked after Confirmation checkbox.");
 
         page.locator(embassyConfig.getNextStepSelector()).click();
         //log.info("Next step button clicked.");
-        page.waitForTimeout(1000);
+        page.waitForTimeout(100);
     }
 
     private String checkApiResponseViaBrowser(Page page, String targetUrl) {
         try {
-            String response = (String) page.evaluate(
-                    embassyConfig.getApiFetchScript(),
-                    targetUrl);
+            String response = (String) page.evaluate(embassyConfig.getApiFetchScript(), targetUrl);
 
             if (response != null) {
                 // Remove leading/trailing quotes or internal escaped quotes if needed
@@ -390,7 +462,7 @@ public class AppointmentService {
         }
     }
 
-    private void selectAppointmentDate(Page page) {
+    private void selectAppointmentDate(Page page, Candidate candidate) {
         try {
             int monthsToCheck = 1;
             Locator nextButton = page.locator(embassyConfig.getCalendarNextSelector());
@@ -401,28 +473,34 @@ public class AppointmentService {
                 }
                 nextButton.click();
                 monthsToCheck++;
-                page.waitForTimeout(1000);
+                page.waitForTimeout(500);
             }
 
-            checkApiResponses(page, monthsToCheck);
-            //page.waitForTimeout(30 * 1000);
-
-            // Find all table cells that have the active class
-            //selectActiveCalendarDate(page);
+            boolean slotFound = checkApiResponses(page, monthsToCheck);
+            if (slotFound) {
+                //waitForManualInput(candidate);
+                page.waitForTimeout(30 * 1000);
+                log.info("!!! EMBASSY SLOTS FOUND for month !!! Check the website immediately.");
+            }
+            if (candidate.firstName().equalsIgnoreCase("Akhilesh")) {
+                selectActiveCalendarDate(page, candidate);
+                //selectSpecificDate(page, "2026-12-15");
+            }
         } catch (Exception e) {
             log.error("Exception occurred while checking appointment calendar dates, Message: {}", e.getMessage());
         }
     }
 
-    private void checkApiResponses(Page page, int count) {
+    private boolean checkApiResponses(Page page, int count) {
         String monthApiResponse = checkApiResponseViaBrowser(page, embassyConfig.getDateUrl());
         log.info("LastAvailableDate API [{}] | Response: {}", embassyConfig.getDateUrl(), monthApiResponse);
 
-        checkAvailableMonthDatesApiResponse(page, count);
+        return checkAvailableMonthDatesApiResponse(page, count);
     }
 
-    private void checkAvailableMonthDatesApiResponse(Page page, int count) {
+    private boolean checkAvailableMonthDatesApiResponse(Page page, int count) {
         LocalDate ld = LocalDate.now();
+        boolean slotFound = false;
         for (int i = 0; i < count; i++) {
             String availableMonthDatesUrl = new StringBuilder(embassyConfig.getAvailableDateUrl())
                     .append(ld.getYear())
@@ -431,9 +509,13 @@ public class AppointmentService {
                     .toString();
 
             String monthApiResponse = checkApiResponseViaBrowser(page, availableMonthDatesUrl);
+            if (monthApiResponse != null && !monthApiResponse.contains(embassyConfig.getAllSlotBookedMessage())) {
+                slotFound = true;
+            }
             log.info("AvailableMonthDates API [{}] | Response: {}", availableMonthDatesUrl, monthApiResponse);
             ld = ld.plusMonths(1);
         }
+        return slotFound;
     }
 
     private <T> T timed(String step, Supplier<T> action) {
@@ -460,18 +542,30 @@ public class AppointmentService {
         return (System.nanoTime() - startNanos) / 1_000_000;
     }
 
-    private void selectActiveCalendarDate(Page page) {
+    private void selectActiveCalendarDate(Page page, Candidate candidate) {
+        log.info("Selecting an available date from the calendar...");
         try {
             Locator availableDates = page.locator(embassyConfig.getActiveDateSelector());
             int count = availableDates.count();
+            saveHtmlSnapshot(page, candidate, "selectActiveCalendarDate");
+            log.info("Number of available dates found: {} for {}", count, candidate.firstName());
+
             if (count > 0) {
+                String dateValueAll = "";
+                for (int i = 0; i < count; i++) {
+                    Locator dateLocator = availableDates.nth(i);
+                    String dateValue = dateLocator.getAttribute(embassyConfig.getDateAttributeName());
+                    log.info("Available date found: {}", dateValue);
+                    dateValueAll += dateValue + ", ";
+                }
+
                 // Example: Click the very first available date
                 Locator targetDate = availableDates.nth(count - 1);
                 String dateValue = targetDate.getAttribute(embassyConfig.getDateAttributeName());
 
                 targetDate.click();
                 log.info("Successfully selected available date: {}", dateValue);
-                writeDatesInFile(null, dateValue, LocalDateTime.now().toString());
+                writeDatesInFile(null, dateValueAll, LocalDateTime.now().toString());
             } else {
                 log.info("No available dates found in the current view.");
             }
@@ -485,6 +579,7 @@ public class AppointmentService {
         String cssSelector = embassyConfig.getSpecificDateSelectorTemplate().formatted(targetDate);
 
         try {
+            log.info("Attempting to select specific date: {} using selector: {}", targetDate, cssSelector);
             // Wait until the specific date element is clickable and click it
             page.locator(cssSelector).click();
             writeDatesInFile(null, targetDate, LocalDateTime.now().toString());
@@ -495,8 +590,32 @@ public class AppointmentService {
     }
 
     private void finalStep(Page page, Candidate candidate) {
-        log.info("FinalStep# providing InvitationNumber");
+        saveHtmlSnapshot(page, candidate, "finalStep");
+        log.info("FinalStep# providing InvitationNumber for candidate: {}", candidate.firstName());
         //log.info("----------- finalStep completed -----------");
+    }
+
+    private void saveHtmlSnapshot(Page page, Candidate candidate, String stage) {
+        try {
+            String candidateFolder = (candidate.firstName() + "_" + candidate.lastName()).replaceAll("[^a-zA-Z0-9._-]", "_");
+            String timestamp = ZonedDateTime.now(EET_ZONE).format(DateTimeFormatter.ofPattern("yyyy-MM-dd_HH-mm-ss-SSS"));
+            Path snapshotDirectory = Path.of("html", candidateFolder, timestamp);
+            Files.createDirectories(snapshotDirectory);
+
+            Path snapshotPath = snapshotDirectory.resolve(stage + ".html");
+            String html = page.content();
+            int headStart = html.toLowerCase(Locale.ROOT).indexOf("<head");
+            int headEnd = headStart < 0 ? -1 : html.indexOf('>', headStart);
+            if (headEnd < 0) {
+                throw new IOException("Page HTML has no head element for setting the asset base URL.");
+            }
+            String baseHref = URI.create(page.url()).resolve("/").toString();
+            html = html.substring(0, headEnd + 1) + "<base href=\"" + baseHref + "\">" + html.substring(headEnd + 1);
+            Files.writeString(snapshotPath, html, StandardCharsets.UTF_8);
+            log.info("Saved {} page HTML snapshot to {}", stage, snapshotPath.toAbsolutePath());
+        } catch (Exception e) {
+            log.info("Failed to save HTML snapshot for candidate {} at stage {}: {}", candidate.firstName(), stage, e.getMessage());
+        }
     }
 
     private List<HttpRequest> buildAvailableDatesRequest(String cookieString) {

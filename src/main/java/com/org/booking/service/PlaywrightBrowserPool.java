@@ -1,6 +1,9 @@
 package com.org.booking.service;
 
 import java.util.Arrays;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 
 import com.microsoft.playwright.Browser;
 import com.microsoft.playwright.BrowserType;
@@ -29,6 +32,39 @@ public class PlaywrightBrowserPool {
             sessions.set(session);
         }
         return session.browser();
+    }
+
+    public void warmUp(Executor executor, int workerCount) {
+        CountDownLatch sessionsCreated = new CountDownLatch(workerCount);
+        CountDownLatch releaseWorkers = new CountDownLatch(1);
+        CompletableFuture<?>[] warmupTasks = new CompletableFuture<?>[workerCount];
+
+        for (int i = 0; i < workerCount; i++) {
+            warmupTasks[i] = CompletableFuture.runAsync(() -> {
+                try {
+                    getBrowser();
+                } finally {
+                    sessionsCreated.countDown();
+                }
+                try {
+                    releaseWorkers.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("Interrupted while warming up Playwright sessions", e);
+                }
+            }, executor);
+        }
+
+        try {
+            sessionsCreated.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            releaseWorkers.countDown();
+            throw new IllegalStateException("Interrupted while waiting for Playwright sessions to start", e);
+        }
+
+        releaseWorkers.countDown();
+        CompletableFuture.allOf(warmupTasks).join();
     }
 
     public void closeCurrentThreadSession() {

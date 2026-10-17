@@ -20,11 +20,10 @@ public class VFSAppointmentScheduler {
 
     private static final Logger log = LoggerFactory.getLogger(VFSAppointmentScheduler.class);
 
-
     @Autowired
     private VfsAppointmentService appointmentService;
 
-    @Scheduled(fixedRate = 60 * 60 * 1000)
+    @Scheduled(fixedDelay = 60 * 60 * 1000)
     public void checkAppointment() {
         MDC.put(APPOINTMENT_FLOW, VFS);
         long startTime = System.currentTimeMillis();

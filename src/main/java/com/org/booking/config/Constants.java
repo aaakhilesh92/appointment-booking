@@ -20,4 +20,6 @@ public interface Constants {
     String NO_DATE = "NO_DATE";
 
     String APPOINTMENT_FLOW = "appointmentFlow";
+
+    int TIME_WINDOW = 15;
 }

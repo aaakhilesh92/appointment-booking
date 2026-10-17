@@ -11,8 +11,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.LocalDateTime;
 
-import static com.org.booking.config.Constants.APPOINTMENT_FLOW;
-import static com.org.booking.config.Constants.EMBASSY;
+import static com.org.booking.config.Constants.*;
 
 @Component
 @ConditionalOnProperty(name = "app.scheduler.embassy.enabled", havingValue = "true", matchIfMissing = true)
@@ -23,7 +22,7 @@ public class EmbassyAppointmentScheduler {
     @Autowired
     private AppointmentService appointmentService;
 
-    @Scheduled(fixedRate = 30 * 60 * 1000)
+    @Scheduled(fixedDelay = TIME_WINDOW * 60 * 1000)
     public void bookAppointment() throws Exception {
         MDC.put(APPOINTMENT_FLOW, EMBASSY);
         long startTime = System.currentTimeMillis();
@@ -41,7 +40,7 @@ public class EmbassyAppointmentScheduler {
         }
     }
 
-    //@Scheduled(fixedRate = 60 * 1000)
+    @Scheduled(fixedDelay = 60 * 1000)
     public void checkAppointment() throws Exception {
         MDC.put(APPOINTMENT_FLOW, EMBASSY);
         long startTime = System.currentTimeMillis();
