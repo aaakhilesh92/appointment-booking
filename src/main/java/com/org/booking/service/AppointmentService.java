@@ -578,11 +578,29 @@ public class AppointmentService {
                     dateValueAll.append(dateValue).append(", ");
                 }
 
-                int dateIndex = Math.floorMod(activeDateSelectionCounter.getAndIncrement(), count);
-                Locator targetDate = availableDates.nth(dateIndex);
-                String dateValue = targetDate.getAttribute(embassyConfig.getDateAttributeName());
-
-                targetDate.click();
+                String dateValue = null;
+                int dateIndex = -1;
+                boolean clickedSuccess = false;
+                int attemptAllowed = 3;
+                for (int attempt = 0; attempt < attemptAllowed; attempt++) {
+                    dateIndex = Math.floorMod(activeDateSelectionCounter.getAndIncrement(), count);
+                    try {
+                        Locator targetDate = availableDates.nth(dateIndex);
+                        dateValue = targetDate.getAttribute(embassyConfig.getDateAttributeName());
+                        log.info("Attempting to click on the available date at index {}: {} for {}",
+                                dateIndex, dateValue, candidate.firstName());
+                        targetDate.click();
+                        clickedSuccess = true;
+                        break;
+                    } catch (Exception e) {
+                        log.warn("Failed to click on the available date at index {} for {}; trying the next date",
+                                dateIndex, candidate.firstName(), e);
+                    }
+                }
+                if (!clickedSuccess) {
+                    log.error("Failed to click any of the {} available dates for {}", count, candidate.firstName());
+                    return;
+                }
                 log.info("Successfully selected available date: {}, dateIndex : {}", dateValue, dateIndex);
                 writeDatesInFile(null, dateValueAll.toString(), LocalDateTime.now().toString());
             } else {
