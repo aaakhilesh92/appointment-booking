@@ -218,18 +218,22 @@ public class AppointmentService {
                 : buildAvailableDatesRequest(cookie));
         if (STATUS_FOUND.equals(status)) {
             handleSlotFound();
-            try {
-                startBookingFlow(false);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                log.warn("Interrupted while starting embassy booking after finding slots", e);
-            } catch (IOException e) {
-                log.error("Failed to start embassy booking after finding slots", e);
-            }
+            //startAppointmentBookingFlow();
         } else if (STATUS_NOT_FOUND.equals(status)) {
             handleSlotNotFound(cookie);
         } else {
             handleInvalidCookie();
+        }
+    }
+
+    private void startAppointmentBookingFlow() {
+        try {
+            startBookingFlow(false);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("Interrupted while starting embassy booking after finding slots", e);
+        } catch (IOException e) {
+            log.error("Failed to start embassy booking after finding slots", e);
         }
     }
 
