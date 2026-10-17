@@ -97,8 +97,8 @@ public class AppointmentService {
     @Autowired
     private Tracer tracer;
 
-    public void bookEmbassyAppointment() throws IOException, InterruptedException {
-        if (!waitUntilBookingTime()) {
+    public void startBookingFlow(boolean enforceBookingWindow) throws IOException, InterruptedException {
+        if (enforceBookingWindow && !waitUntilBookingTime()) {
             log.info("Skipping embassy booking: not within the 15-minute booking window");
             return;
         }
@@ -218,6 +218,14 @@ public class AppointmentService {
                 : buildAvailableDatesRequest(cookie));
         if (STATUS_FOUND.equals(status)) {
             handleSlotFound();
+            try {
+                startBookingFlow(false);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                log.warn("Interrupted while starting embassy booking after finding slots", e);
+            } catch (IOException e) {
+                log.error("Failed to start embassy booking after finding slots", e);
+            }
         } else if (STATUS_NOT_FOUND.equals(status)) {
             handleSlotNotFound(cookie);
         } else {

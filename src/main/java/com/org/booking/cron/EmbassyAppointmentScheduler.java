@@ -28,7 +28,7 @@ public class EmbassyAppointmentScheduler {
         long startTime = System.currentTimeMillis();
         try {
             log.info("BookAppointmentScheduler::bookAppointment starting now, currentTime: {}", LocalDateTime.now());
-            appointmentService.bookEmbassyAppointment();
+            appointmentService.startBookingFlow(true);
             log.info("BookAppointmentScheduler::bookAppointment completed now and took {}ms",
                     System.currentTimeMillis() - startTime);
         } catch (Exception e) {
